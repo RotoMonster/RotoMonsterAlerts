@@ -1,8 +1,6 @@
-// RotoMonster Alerts - monitor alert server
-// Postgres, runs on server.rotomonster.com behind IIS.
-
 require('dotenv').config();
 const express = require('express');
+const crypto = require('crypto');
 const { Pool } = require('pg');
 const cors = require('cors');
 const { Expo } = require('expo-server-sdk');
@@ -12,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3005;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static('public'));
 
 const pool = new Pool({
@@ -30,8 +28,9 @@ const expo = new Expo({
   useFcmV1: true
 });
 
-// Sport ids match RotoMonsterTwitter: 1 basketball, 2 baseball.
-const SPORTS = { 1: 'NBA', 2: 'MLB' };
+const SPORTS = { 1: 'NBA', 2: 'MLB', 3: 'NFL', 4: 'NHL' };
+
+const CUSTOMER_REPLY_PREFIX = '[Customer]';
 
 async function initializeDatabase() {
   try {
@@ -83,23 +82,84 @@ function isValidPushToken(token) {
   return token && (token.startsWith('ExponentPushToken[') || token.startsWith('simulator_token_'));
 }
 
-// Send endpoints are key-protected. Read endpoints are not, since the app
-// itself has no way to hold a secret - the registration code is the gate there.
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a || ''));
+  const y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
 function requireApiKey(req, res, next) {
   const configured = process.env.API_KEY;
   if (!configured) {
     console.warn('API_KEY not set - refusing protected request');
     return res.status(503).json({ success: false, error: 'Server not configured' });
   }
-  if (req.get('X-API-Key') !== configured) {
+  if (!safeEqual(req.get('X-API-Key'), configured)) {
     return res.status(401).json({ success: false, error: 'Invalid or missing X-API-Key' });
   }
   next();
 }
 
-// ============================================
-// HEALTH
-// ============================================
+function requireWebhookSecret(req, res, next) {
+  const configured = process.env.ZOHO_WEBHOOK_SECRET;
+  if (!configured) {
+    console.warn('ZOHO_WEBHOOK_SECRET not set - refusing webhook');
+    return res.status(503).json({ success: false, error: 'Server not configured' });
+  }
+  if (!safeEqual(req.query.secret, configured)) {
+    return res.status(401).json({ success: false, error: 'Invalid secret' });
+  }
+  next();
+}
+
+async function createMessage({ sportId, title, body, url, notify }) {
+  const shouldNotify = notify !== false;
+  const messageId = uuidv4();
+  const cleanTitle = title.trim();
+
+  const inserted = await pool.query(
+    `INSERT INTO messages (message_id, sport_id, title, body, url, notified)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, message_id, sport_id, title, body, url, created_at`,
+    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify]
+  );
+
+  let sent = 0;
+
+  if (shouldNotify) {
+    const devices = await pool.query(
+      'SELECT code, push_token FROM devices WHERE notifications_enabled = true'
+    );
+
+    const pushMessages = devices.rows
+      .filter(d => Expo.isExpoPushToken(d.push_token))
+      .map(d => ({
+        to: d.push_token,
+        sound: 'default',
+        title: sportId ? `${SPORTS[sportId]} - ${cleanTitle}` : cleanTitle,
+        body: body || '',
+        data: { message_id: messageId, sport_id: sportId ?? null, url: url || null },
+        priority: 'high',
+        channelId: 'default'
+      }));
+
+    if (pushMessages.length > 0) {
+      try {
+        for (const chunk of expo.chunkPushNotifications(pushMessages)) {
+          await expo.sendPushNotificationsAsync(chunk);
+        }
+        sent = pushMessages.length;
+        console.log(`Sent ${sent} notifications`);
+      } catch (error) {
+        console.error('Push send failed:', error);
+      }
+    }
+
+    await pool.query('UPDATE messages SET recipients = $1 WHERE message_id = $2', [sent, messageId]);
+  }
+
+  return { messageId, notified: shouldNotify, sent, message: inserted.rows[0] };
+}
 
 app.get('/api/health', async (req, res) => {
   try {
@@ -109,10 +169,6 @@ app.get('/api/health', async (req, res) => {
     res.status(500).json({ success: false, database: 'error', error: error.message });
   }
 });
-
-// ============================================
-// CODES
-// ============================================
 
 app.post('/api/codes', requireApiKey, async (req, res) => {
   try {
@@ -170,10 +226,6 @@ app.delete('/api/codes/:code', requireApiKey, async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
-
-// ============================================
-// DEVICES
-// ============================================
 
 app.post('/api/register', async (req, res) => {
   try {
@@ -269,12 +321,6 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
   }
 });
 
-// ============================================
-// MESSAGES
-// ============================================
-
-// Post a monitoring message. Everyone registered receives it - there is no
-// per-message recipient list, unlike the Basketball Monster injury alerts.
 app.post('/api/message', requireApiKey, async (req, res) => {
   try {
     const { sportId, title, body, url, notify } = req.body;
@@ -284,62 +330,106 @@ app.post('/api/message', requireApiKey, async (req, res) => {
     }
 
     if (sportId != null && !SPORTS[sportId]) {
-      return res.status(400).json({ success: false, error: 'sportId must be 1 (NBA), 2 (MLB) or omitted' });
+      return res.status(400).json({ success: false, error: 'sportId must be 1 (NBA), 2 (MLB), 3 (NFL), 4 (NHL) or omitted' });
     }
 
-    const shouldNotify = notify !== false;
-    const messageId = uuidv4();
-
-    const inserted = await pool.query(
-      `INSERT INTO messages (message_id, sport_id, title, body, url, notified)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, message_id, sport_id, title, body, url, created_at`,
-      [messageId, sportId ?? null, title.trim(), body || null, url || null, shouldNotify]
-    );
-
-    let sent = 0;
-
-    if (shouldNotify) {
-      const devices = await pool.query(
-        'SELECT code, push_token FROM devices WHERE notifications_enabled = true'
-      );
-
-      const pushMessages = devices.rows
-        .filter(d => Expo.isExpoPushToken(d.push_token))
-        .map(d => ({
-          to: d.push_token,
-          sound: 'default',
-          title: sportId ? `${SPORTS[sportId]} - ${title.trim()}` : title.trim(),
-          body: body || '',
-          data: { message_id: messageId, sport_id: sportId ?? null, url: url || null },
-          priority: 'high',
-          channelId: 'default'
-        }));
-
-      if (pushMessages.length > 0) {
-        try {
-          for (const chunk of expo.chunkPushNotifications(pushMessages)) {
-            await expo.sendPushNotificationsAsync(chunk);
-          }
-          sent = pushMessages.length;
-          console.log(`Sent ${sent} notifications`);
-        } catch (error) {
-          // A push failure must not lose the message - it is already stored.
-          console.error('Push send failed:', error);
-        }
-      }
-
-      await pool.query('UPDATE messages SET recipients = $1 WHERE message_id = $2', [sent, messageId]);
-    }
-
-    res.json({ success: true, messageId, notified: shouldNotify, sent, message: inserted.rows[0] });
+    const result = await createMessage({ sportId, title, body, url, notify });
+    res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error posting message:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
-// What the app reads. hours defaults to 12, sportId omitted means all sports.
+function stripHtml(text) {
+  return String(text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function shorten(text, max) {
+  const clean = stripHtml(text);
+  return clean.length <= max ? clean : clean.slice(0, max - 1) + '…';
+}
+
+function ticketUrl(ticketId, webUrl) {
+  if (webUrl) return webUrl;
+  const template = process.env.ZOHO_TICKET_URL;
+  return template && ticketId ? template.replace('{id}', ticketId) : null;
+}
+
+function describeZohoEvent(event) {
+  const type = event.eventType || '';
+  const p = event.payload || {};
+
+  if (type === 'Ticket_Add') {
+    const who = (p.contact && (p.contact.lastName || p.contact.email)) || p.email || 'Someone';
+    return {
+      title: `New support ticket #${p.ticketNumber || ''}`.trim(),
+      body: `${who}: ${shorten(p.subject, 80)}${p.description ? ' - ' + shorten(p.description, 120) : ''}`,
+      url: ticketUrl(p.id, p.webUrl)
+    };
+  }
+
+  if (type === 'Ticket_Thread_Add') {
+    if ((p.direction || '').toLowerCase() !== 'in') return null;
+    const who = (p.author && (p.author.name || p.author.email)) || 'Customer';
+    return {
+      title: 'Customer replied to a support ticket',
+      body: `${who}: ${shorten(p.summary || p.content, 160)}`,
+      url: ticketUrl(p.ticketId)
+    };
+  }
+
+  if (type === 'Ticket_Comment_Add') {
+    const content = stripHtml(p.content);
+    if (!content.startsWith(CUSTOMER_REPLY_PREFIX)) return null;
+    return {
+      title: 'Customer replied to a support ticket',
+      body: shorten(content.slice(CUSTOMER_REPLY_PREFIX.length), 160),
+      url: ticketUrl(p.ticketId)
+    };
+  }
+
+  return null;
+}
+
+app.get('/api/zoho/webhook', (req, res) => res.status(200).send('ok'));
+app.head('/api/zoho/webhook', (req, res) => res.status(200).end());
+
+app.post('/api/zoho/webhook', requireWebhookSecret, async (req, res) => {
+  const events = Array.isArray(req.body) ? req.body : [req.body];
+  const results = [];
+
+  if (process.env.ZOHO_WEBHOOK_LOG === 'true') {
+    console.log('Zoho webhook:', JSON.stringify(req.body).slice(0, 4000));
+  }
+
+  for (const event of events) {
+    try {
+      const alert = describeZohoEvent(event || {});
+      if (!alert) {
+        results.push({ eventType: event && event.eventType, skipped: true });
+        continue;
+      }
+      const created = await createMessage({ sportId: null, ...alert, notify: true });
+      results.push({ eventType: event.eventType, messageId: created.messageId, sent: created.sent });
+    } catch (error) {
+      console.error('Zoho webhook event failed:', error);
+      results.push({ eventType: event && event.eventType, error: true });
+    }
+  }
+
+  res.status(200).json({ success: true, results });
+});
+
 app.get('/api/messages', async (req, res) => {
   try {
     const hours = Math.min(Math.max(parseInt(req.query.hours || '12', 10) || 12, 1), 720);
@@ -389,6 +479,10 @@ app.get('/api/sports', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`RotoMonster Alerts listening on ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`RotoMonster Alerts listening on ${PORT}`);
+  });
+}
+
+module.exports = { app, describeZohoEvent };
