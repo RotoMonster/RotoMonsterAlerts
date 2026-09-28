@@ -30,6 +30,8 @@ const expo = new Expo({
 
 const SPORTS = { 1: 'NBA', 2: 'MLB', 3: 'NFL', 4: 'NHL' };
 
+const LEVELS = ['low', 'medium', 'high', 'monster'];
+
 const CUSTOMER_REPLY_PREFIX = '[Customer]';
 
 async function initializeDatabase() {
@@ -66,6 +68,8 @@ async function initializeDatabase() {
         is_deleted boolean NOT NULL DEFAULT false
       )
     `);
+
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS level text`);
 
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages (created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_sport ON messages (sport_id, created_at DESC)`);
@@ -112,17 +116,24 @@ function requireWebhookSecret(req, res, next) {
   next();
 }
 
-async function createMessage({ sportId, title, body, url, notify }) {
+async function createMessage({ sportId, title, body, url, notify, level }) {
   const shouldNotify = notify !== false;
   const messageId = uuidv4();
   const cleanTitle = title.trim();
+  const cleanLevel = level || null;
 
   const inserted = await pool.query(
-    `INSERT INTO messages (message_id, sport_id, title, body, url, notified)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, message_id, sport_id, title, body, url, created_at`,
-    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify]
+    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, message_id, sport_id, title, body, url, level, created_at`,
+    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel]
   );
+
+  const pushTitle = [
+    cleanLevel === 'monster' ? 'MONSTER' : null,
+    sportId ? SPORTS[sportId] : null,
+    cleanTitle
+  ].filter(Boolean).join(' - ');
 
   let sent = 0;
 
@@ -136,9 +147,9 @@ async function createMessage({ sportId, title, body, url, notify }) {
       .map(d => ({
         to: d.push_token,
         sound: 'default',
-        title: sportId ? `${SPORTS[sportId]} - ${cleanTitle}` : cleanTitle,
+        title: pushTitle,
         body: body || '',
-        data: { message_id: messageId, sport_id: sportId ?? null, url: url || null },
+        data: { message_id: messageId, sport_id: sportId ?? null, url: url || null, level: cleanLevel },
         priority: 'high',
         channelId: 'default'
       }));
@@ -324,6 +335,7 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
 app.post('/api/message', requireApiKey, async (req, res) => {
   try {
     const { sportId, title, body, url, notify } = req.body;
+    const level = req.body.level != null && req.body.level !== '' ? String(req.body.level).trim().toLowerCase() : null;
 
     if (!title || !title.trim()) {
       return res.status(400).json({ success: false, error: 'title is required' });
@@ -333,7 +345,11 @@ app.post('/api/message', requireApiKey, async (req, res) => {
       return res.status(400).json({ success: false, error: 'sportId must be 1 (NBA), 2 (MLB), 3 (NFL), 4 (NHL) or omitted' });
     }
 
-    const result = await createMessage({ sportId, title, body, url, notify });
+    if (level != null && !LEVELS.includes(level)) {
+      return res.status(400).json({ success: false, error: 'level must be low, medium, high, monster or omitted' });
+    }
+
+    const result = await createMessage({ sportId, title, body, url, notify, level });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error posting message:', error);
@@ -444,7 +460,7 @@ app.get('/api/messages', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT message_id, sport_id, title, body, url, created_at
+      `SELECT message_id, sport_id, title, body, url, level, created_at
        FROM messages
        WHERE ${where}
        ORDER BY created_at DESC
