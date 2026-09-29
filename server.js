@@ -73,6 +73,10 @@ async function initializeDatabase() {
 
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS level text`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS status text`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_player boolean NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_user_ids text[]`);
+    await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS user_id text`);
+    await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS my_players_only boolean NOT NULL DEFAULT false`);
 
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages (created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_sport ON messages (sport_id, created_at DESC)`);
@@ -119,18 +123,20 @@ function requireWebhookSecret(req, res, next) {
   next();
 }
 
-async function createMessage({ sportId, title, body, url, notify, level, status }) {
+async function createMessage({ sportId, title, body, url, notify, level, status, ownerUserIds }) {
   const shouldNotify = notify !== false;
   const messageId = uuidv4();
   const cleanTitle = title.trim();
   const cleanLevel = level || null;
   const cleanStatus = status || null;
+  const owners = Array.isArray(ownerUserIds) ? ownerUserIds : null;
+  const isPlayer = cleanStatus != null || owners != null;
 
   const inserted = await pool.query(
-    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING id, message_id, sport_id, title, body, url, level, status, created_at`,
-    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus]
+    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status, is_player, owner_user_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING id, message_id, sport_id, title, body, url, level, status, is_player, created_at`,
+    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus, isPlayer, owners]
   );
 
   const pushTitle = [
@@ -143,17 +149,29 @@ async function createMessage({ sportId, title, body, url, notify, level, status 
 
   if (shouldNotify) {
     const devices = await pool.query(
-      'SELECT code, push_token FROM devices WHERE notifications_enabled = true'
+      `SELECT d.code, d.push_token, d.my_players_only, c.user_id
+       FROM devices d
+       LEFT JOIN valid_codes c ON c.code = d.code
+       WHERE d.notifications_enabled = true`
     );
 
+    const ownerSet = new Set(owners || []);
     const pushMessages = devices.rows
       .filter(d => Expo.isExpoPushToken(d.push_token))
+      .filter(d => !isPlayer || !d.my_players_only || (d.user_id != null && ownerSet.has(d.user_id)))
       .map(d => ({
         to: d.push_token,
         sound: 'default',
         title: pushTitle,
         body: body || '',
-        data: { message_id: messageId, sport_id: sportId ?? null, url: url || null, level: cleanLevel, status: cleanStatus },
+        data: {
+          message_id: messageId,
+          sport_id: sportId ?? null,
+          url: url || null,
+          level: cleanLevel,
+          status: cleanStatus,
+          mine: d.user_id != null && ownerSet.has(d.user_id)
+        },
         priority: 'high',
         channelId: 'default'
       }));
@@ -197,11 +215,12 @@ app.post('/api/codes', requireApiKey, async (req, res) => {
       const code = (typeof entry === 'string' ? entry : entry.code || '').trim().toUpperCase();
       if (!code) continue;
       const note = typeof entry === 'string' ? null : entry.note || null;
+      const userId = typeof entry === 'string' || entry.userId == null || entry.userId === '' ? null : String(entry.userId).trim();
 
       const result = await pool.query(
-        `INSERT INTO valid_codes (code, note) VALUES ($1, $2)
+        `INSERT INTO valid_codes (code, note, user_id) VALUES ($1, $2, $3)
          ON CONFLICT (code) DO NOTHING`,
-        [code, note]
+        [code, note, userId]
       );
       added += result.rowCount;
     }
@@ -216,7 +235,7 @@ app.post('/api/codes', requireApiKey, async (req, res) => {
 app.get('/api/codes', requireApiKey, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT c.code, c.note, c.created_at,
+      SELECT c.code, c.note, c.user_id, c.created_at,
              (d.code IS NOT NULL) AS registered,
              d.last_seen
       FROM valid_codes c
@@ -226,6 +245,21 @@ app.get('/api/codes', requireApiKey, async (req, res) => {
     res.json({ success: true, codes: result.rows });
   } catch (error) {
     console.error('Error listing codes:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+app.put('/api/codes/:code', requireApiKey, async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const userId = req.body.userId == null || req.body.userId === '' ? null : String(req.body.userId).trim();
+    const result = await pool.query('UPDATE valid_codes SET user_id = $1 WHERE code = $2', [userId, code]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Code not found' });
+    }
+    res.json({ success: true, code, userId });
+  } catch (error) {
+    console.error('Error updating code:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -317,11 +351,39 @@ app.put('/api/device/:code/notifications', async (req, res) => {
   }
 });
 
+app.put('/api/device/:code/filter', async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const { myPlayersOnly } = req.body;
+
+    if (typeof myPlayersOnly !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'myPlayersOnly must be true or false' });
+    }
+
+    const result = await pool.query(
+      'UPDATE devices SET my_players_only = $1 WHERE code = $2',
+      [myPlayersOnly, code]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Device not registered' });
+    }
+
+    res.json({ success: true, myPlayersOnly });
+  } catch (error) {
+    console.error('Error updating filter:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 app.get('/api/device/:code/notifications-status', async (req, res) => {
   try {
     const code = req.params.code.trim().toUpperCase();
     const result = await pool.query(
-      'SELECT notifications_enabled FROM devices WHERE code = $1',
+      `SELECT d.notifications_enabled, d.my_players_only, c.user_id
+       FROM devices d
+       LEFT JOIN valid_codes c ON c.code = d.code
+       WHERE d.code = $1`,
       [code]
     );
 
@@ -329,7 +391,8 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Device not registered' });
     }
 
-    res.json({ success: true, enabled: result.rows[0].notifications_enabled });
+    const row = result.rows[0];
+    res.json({ success: true, enabled: row.notifications_enabled, myPlayersOnly: row.my_players_only, linked: row.user_id != null });
   } catch (error) {
     console.error('Error reading notification setting:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -341,6 +404,7 @@ app.post('/api/message', requireApiKey, async (req, res) => {
     const { sportId, title, body, url, notify } = req.body;
     const level = req.body.level != null && req.body.level !== '' ? String(req.body.level).trim().toLowerCase() : null;
     const status = req.body.status != null && req.body.status !== '' ? String(req.body.status).trim().toLowerCase() : null;
+    const rawOwners = req.body.ownerUserIds;
 
     if (!title || !title.trim()) {
       return res.status(400).json({ success: false, error: 'title is required' });
@@ -358,7 +422,15 @@ app.post('/api/message', requireApiKey, async (req, res) => {
       return res.status(400).json({ success: false, error: 'status must be probable, questionable, injured, traded, note or omitted' });
     }
 
-    const result = await createMessage({ sportId, title, body, url, notify, level, status });
+    if (rawOwners != null && !Array.isArray(rawOwners)) {
+      return res.status(400).json({ success: false, error: 'ownerUserIds must be an array of user ids or omitted' });
+    }
+
+    const ownerUserIds = rawOwners == null
+      ? null
+      : [...new Set(rawOwners.map(id => String(id).trim()).filter(Boolean))];
+
+    const result = await createMessage({ sportId, title, body, url, notify, level, status, ownerUserIds });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error posting message:', error);
@@ -460,6 +532,13 @@ app.get('/api/messages', async (req, res) => {
     const hours = Math.min(Math.max(parseInt(req.query.hours || '12', 10) || 12, 1), 720);
     const sportId = req.query.sportId ? parseInt(req.query.sportId, 10) : null;
 
+    const code = req.query.code ? String(req.query.code).trim().toUpperCase() : null;
+    let userId = null;
+    if (code) {
+      const found = await pool.query('SELECT user_id FROM valid_codes WHERE code = $1', [code]);
+      if (found.rowCount > 0) userId = found.rows[0].user_id;
+    }
+
     const params = [hours];
     let where = `is_deleted = false AND created_at >= now() - ($1 || ' hours')::interval`;
 
@@ -469,7 +548,7 @@ app.get('/api/messages', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT message_id, sport_id, title, body, url, level, status, created_at
+      `SELECT message_id, sport_id, title, body, url, level, status, is_player, owner_user_ids, created_at
        FROM messages
        WHERE ${where}
        ORDER BY created_at DESC
@@ -477,7 +556,12 @@ app.get('/api/messages', async (req, res) => {
       params
     );
 
-    res.json({ success: true, hours, sportId, count: result.rowCount, messages: result.rows });
+    const messages = result.rows.map(({ owner_user_ids, ...m }) => ({
+      ...m,
+      mine: userId != null && Array.isArray(owner_user_ids) && owner_user_ids.includes(userId)
+    }));
+
+    res.json({ success: true, hours, sportId, count: result.rowCount, messages });
   } catch (error) {
     console.error('Error reading messages:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
