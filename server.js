@@ -32,7 +32,12 @@ const SPORTS = { 1: 'NBA', 2: 'MLB', 3: 'NFL', 4: 'NHL' };
 
 const LEVELS = ['low', 'medium', 'high', 'monster'];
 
-const STATUSES = ['probable', 'questionable', 'injured', 'traded', 'note'];
+const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function normalizeColor(value) {
+  const v = value.trim().toLowerCase();
+  return v.length === 4 ? '#' + v.slice(1).split('').map(ch => ch + ch).join('') : v;
+}
 
 const CUSTOMER_REPLY_PREFIX = '[Customer]';
 
@@ -73,6 +78,7 @@ async function initializeDatabase() {
 
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS level text`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS status text`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS status_color text`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_player boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_user_ids text[]`);
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS user_id text`);
@@ -123,20 +129,21 @@ function requireWebhookSecret(req, res, next) {
   next();
 }
 
-async function createMessage({ sportId, title, body, url, notify, level, status, ownerUserIds }) {
+async function createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds }) {
   const shouldNotify = notify !== false;
   const messageId = uuidv4();
   const cleanTitle = title.trim();
   const cleanLevel = level || null;
   const cleanStatus = status || null;
+  const cleanStatusColor = cleanStatus && statusColor ? statusColor : null;
   const owners = Array.isArray(ownerUserIds) ? ownerUserIds : null;
   const isPlayer = cleanStatus != null || owners != null;
 
   const inserted = await pool.query(
-    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status, is_player, owner_user_ids)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     RETURNING id, message_id, sport_id, title, body, url, level, status, is_player, created_at`,
-    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus, isPlayer, owners]
+    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status, status_color, is_player, owner_user_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING id, message_id, sport_id, title, body, url, level, status, status_color, is_player, created_at`,
+    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus, cleanStatusColor, isPlayer, owners]
   );
 
   const pushTitle = [
@@ -170,6 +177,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
           url: url || null,
           level: cleanLevel,
           status: cleanStatus,
+          status_color: cleanStatusColor,
           mine: d.user_id != null && ownerSet.has(d.user_id)
         },
         priority: 'high',
@@ -403,7 +411,8 @@ app.post('/api/message', requireApiKey, async (req, res) => {
   try {
     const { sportId, title, body, url, notify } = req.body;
     const level = req.body.level != null && req.body.level !== '' ? String(req.body.level).trim().toLowerCase() : null;
-    const status = req.body.status != null && req.body.status !== '' ? String(req.body.status).trim().toLowerCase() : null;
+    const status = req.body.status != null && String(req.body.status).trim() !== '' ? String(req.body.status).trim() : null;
+    const rawStatusColor = req.body.statusColor != null && String(req.body.statusColor).trim() !== '' ? String(req.body.statusColor) : null;
     const rawOwners = req.body.ownerUserIds;
 
     if (!title || !title.trim()) {
@@ -418,9 +427,15 @@ app.post('/api/message', requireApiKey, async (req, res) => {
       return res.status(400).json({ success: false, error: 'level must be low, medium, high, monster or omitted' });
     }
 
-    if (status != null && !STATUSES.includes(status)) {
-      return res.status(400).json({ success: false, error: 'status must be probable, questionable, injured, traded, note or omitted' });
+    if (status != null && status.length > 40) {
+      return res.status(400).json({ success: false, error: 'status must be 40 characters or fewer' });
     }
+
+    if (rawStatusColor != null && !HEX_COLOR.test(rawStatusColor.trim())) {
+      return res.status(400).json({ success: false, error: 'statusColor must be a hex color like #01A9DB' });
+    }
+
+    const statusColor = rawStatusColor != null ? normalizeColor(rawStatusColor) : null;
 
     if (rawOwners != null && !Array.isArray(rawOwners)) {
       return res.status(400).json({ success: false, error: 'ownerUserIds must be an array of user ids or omitted' });
@@ -430,7 +445,7 @@ app.post('/api/message', requireApiKey, async (req, res) => {
       ? null
       : [...new Set(rawOwners.map(id => String(id).trim()).filter(Boolean))];
 
-    const result = await createMessage({ sportId, title, body, url, notify, level, status, ownerUserIds });
+    const result = await createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error posting message:', error);
@@ -548,7 +563,7 @@ app.get('/api/messages', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT message_id, sport_id, title, body, url, level, status, is_player, owner_user_ids, created_at
+      `SELECT message_id, sport_id, title, body, url, level, status, status_color, is_player, owner_user_ids, created_at
        FROM messages
        WHERE ${where}
        ORDER BY created_at DESC
