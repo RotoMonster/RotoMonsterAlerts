@@ -407,6 +407,33 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
   }
 });
 
+function normalizeAlertBody(b) {
+  if (!b || typeof b !== 'object') return b;
+  if (b.body === undefined && b.details !== undefined) b.body = b.details;
+  if (b.level === undefined && b.alert_level !== undefined) b.level = String(b.alert_level).toLowerCase();
+  if (b.statusColor === undefined && b.status_color !== undefined) b.statusColor = b.status_color;
+  if (b.ownerUserIds === undefined && Array.isArray(b.users)) {
+    b.ownerUserIds = b.users.map(u => String(u && u.user_id !== undefined ? u.user_id : u)).filter(Boolean);
+    if (b.isPlayer === undefined) b.isPlayer = true;
+  }
+  if (b.sportId === undefined && b.sport_id === undefined) b.sportId = 1;
+  return b;
+}
+
+app.use((req, res, next) => {
+  const isSend = req.method === 'POST' && (req.path === '/api/message' || req.path === '/api/messages');
+  const isUpdate = req.method === 'PUT' && req.path.startsWith('/api/messages/');
+  if (isSend || isUpdate) {
+    normalizeAlertBody(req.body);
+    const json = res.json.bind(res);
+    res.json = (payload) => json(payload && payload.messageId && payload.alert_id === undefined
+      ? { ...payload, alert_id: payload.messageId }
+      : payload);
+  }
+  if (req.method === 'POST' && req.path === '/api/messages') req.url = '/api/message';
+  next();
+});
+
 app.post('/api/message', requireApiKey, async (req, res) => {
   try {
     const { sportId, title, body, url, notify } = req.body;
@@ -593,6 +620,31 @@ app.delete('/api/messages/:messageId', requireApiKey, async (req, res) => {
   } catch (error) {
     console.error('Error deleting message:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+app.put('/api/messages/:messageId', requireApiKey, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const b = req.body || {};
+    const level = b.level !== undefined ? String(b.level).toLowerCase() : null;
+    if (level !== null && !['low', 'medium', 'high', 'monster'].includes(level)) {
+      return res.status(400).json({ success: false, error: 'level must be low, medium, high or monster' });
+    }
+    const result = await pool.query(
+      `UPDATE messages SET
+         title = COALESCE($2, title),
+         body = COALESCE($3, body),
+         status = COALESCE($4, status),
+         status_color = COALESCE($5, status_color),
+         level = COALESCE($6, level)
+       WHERE message_id = $1 AND is_deleted = false`,
+      [messageId, b.title ?? null, b.body ?? null, b.status ?? null, b.statusColor ?? null, level]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: 'Message not found' });
+    res.json({ success: true, message: 'Message updated', messageId, alert_id: messageId });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
