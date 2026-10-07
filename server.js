@@ -434,7 +434,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post('/api/message', requireApiKey, async (req, res) => {
+app.post(['/api/message', '/api/messages'], requireApiKey, async (req, res) => {
   try {
     const { sportId, title, body, url, notify } = req.body;
     const level = req.body.level != null && req.body.level !== '' ? String(req.body.level).trim().toLowerCase() : null;
