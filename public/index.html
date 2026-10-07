@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RotoMonster Alerts</title>
+<style>
+:root {
+  --bg: #f4f6f9; --card: #ffffff; --text: #1e293b; --muted: #64748b; --border: #e2e8f0;
+  --input: #ffffff; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a; --chip: #f1f5f9;
+}
+:root[data-theme="dark"] {
+  --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --muted: #94a3b8; --border: #334155;
+  --input: #0f172a; --accent: #60a5fa; --danger: #f87171; --ok: #4ade80; --chip: #334155;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; margin-right: auto; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; display: grid; gap: 18px; }
+section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+section h2 { margin: 0 0 14px; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+section h2 .spacer { margin-left: auto; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); color: var(--text); font: inherit; }
+textarea { resize: vertical; min-height: 70px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.full { grid-column: 1 / -1; }
+button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); background: var(--chip); color: var(--text); padding: 7px 12px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.danger { color: var(--danger); }
+button:disabled { opacity: 0.5; cursor: default; }
+.levels { display: flex; gap: 6px; flex-wrap: wrap; }
+.levels button { color: #fff; border: 2px solid transparent; font-weight: 600; }
+.levels button.on { border-color: var(--text); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); font-weight: 400; margin: 0; }
+.check input { width: auto; }
+.result { font-size: 13px; }
+.result.ok { color: var(--ok); }
+.result.err { color: var(--danger); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #fff; }
+.muted { color: var(--muted); }
+.msg { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; }
+.msg-list { display: grid; gap: 8px; }
+.msg-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.msg-title { font-weight: 600; font-size: 15px; }
+.msg-actions { margin-left: auto; display: flex; gap: 6px; }
+.keybox { display: flex; gap: 6px; align-items: center; }
+.keybox input { width: 220px; }
+dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text); width: min(560px, 92vw); padding: 18px; }
+dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RotoMonster Alerts</h1>
+  <div class="keybox">
+    <input id="apiKey" type="password" placeholder="API key" autocomplete="off">
+    <button id="saveKey">Save key</button>
+  </div>
+  <button id="themeBtn" title="Light or dark">◐</button>
+</header>
+
+<main>
+  <section>
+    <h2>Send an alert</h2>
+    <form id="sendForm" class="grid">
+      <div>
+        <label for="sSport">Sport</label>
+        <select id="sSport">
+          <option value="1">NBA</option>
+          <option value="2">MLB</option>
+          <option value="3">NFL</option>
+          <option value="4">NHL</option>
+          <option value="">None (site alert)</option>
+        </select>
+      </div>
+      <div>
+        <label for="sStatus">Player status (optional)</label>
+        <select id="sStatus"></select>
+      </div>
+      <div class="full">
+        <label for="sTitle">Title</label>
+        <input id="sTitle" required placeholder="e.g. Jalen Brunson NYK - PG">
+      </div>
+      <div class="full">
+        <label for="sBody">Message</label>
+        <textarea id="sBody" placeholder="Details"></textarea>
+      </div>
+      <div class="full">
+        <label for="sUrl">Link (optional)</label>
+        <input id="sUrl" type="url" placeholder="https://">
+      </div>
+      <div class="full">
+        <label>Level</label>
+        <div class="levels" id="sLevels"></div>
+      </div>
+      <div class="full">
+        <label for="sOwners">Owner user ids for My players (optional, comma separated)</label>
+        <input id="sOwners" placeholder="12345, 67890">
+      </div>
+      <div class="full row">
+        <label class="check"><input type="checkbox" id="sNotify" checked> Send a push notification</label>
+        <button type="submit" class="primary" style="margin-left:auto">Send alert</button>
+      </div>
+      <div class="full result" id="sendResult"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Recent alerts
+      <span class="spacer"></span>
+      <select id="mHours" style="width:auto">
+        <option value="12">Past 12 hours</option>
+        <option value="24">Past 24 hours</option>
+        <option value="72">Past 3 days</option>
+        <option value="168">Past week</option>
+      </select>
+      <select id="mSport" style="width:auto">
+        <option value="">All sports</option>
+        <option value="1">NBA</option>
+        <option value="2">MLB</option>
+        <option value="3">NFL</option>
+        <option value="4">NHL</option>
+      </select>
+      <button id="mRefresh">↻ Refresh</button>
+    </h2>
+    <div id="msgList" class="msg-list"></div>
+  </section>
+
+  <section>
+    <h2>Codes <span class="spacer"></span><button id="cRefresh">↻ Refresh</button></h2>
+    <form id="codeForm" class="grid" style="margin-bottom:14px">
+      <div>
+        <label for="cCodes">New codes (comma or one per line)</label>
+        <textarea id="cCodes" placeholder="RYTEST&#10;KENTEST"></textarea>
+      </div>
+      <div>
+        <label for="cNote">Note (optional)</label>
+        <input id="cNote" placeholder="Who it's for">
+        <label for="cUser" style="margin-top:10px">BM user id (optional)</label>
+        <input id="cUser" placeholder="Links My players">
+      </div>
+      <div class="full row">
+        <button type="submit" class="primary">Add codes</button>
+        <span class="result" id="codeResult"></span>
+      </div>
+    </form>
+    <div class="scroll"><table>
+      <thead><tr><th>Code</th><th>Note</th><th>BM user id</th><th>Registered</th><th>Last seen</th><th></th></tr></thead>
+      <tbody id="codeRows"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Devices <span class="spacer"></span><button id="dRefresh">↻ Refresh</button></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Code</th><th>Notifications</th><th>Last seen</th></tr></thead>
+      <tbody id="deviceRows"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<dialog id="editDialog">
+  <form id="editForm" class="grid" method="dialog">
+    <h2 class="full" style="margin:0">Edit alert</h2>
+    <div class="full">
+      <label for="eTitle">Title</label>
+      <input id="eTitle" required>
+    </div>
+    <div class="full">
+      <label for="eBody">Message</label>
+      <textarea id="eBody"></textarea>
+    </div>
+    <div>
+      <label for="eStatus">Player status</label>
+      <select id="eStatus"></select>
+    </div>
+    <div class="full">
+      <label>Level</label>
+      <div class="levels" id="eLevels"></div>
+    </div>
+    <div class="full row">
+      <span class="result" id="editResult"></span>
+      <button type="button" id="editCancel" style="margin-left:auto">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const SPORTS = { 1: 'NBA', 2: 'MLB', 3: 'NFL', 4: 'NHL' };
+const SPORT_COLORS = { 1: '#e8590c', 2: '#2f9e44', 3: '#86592d', 4: '#0077b3' };
+const LEVELS = [
+  { id: 'low', label: 'Low', color: '#8C8C8C' },
+  { id: 'medium', label: 'Medium', color: '#6699FF' },
+  { id: 'high', label: 'High', color: '#E68A00' },
+  { id: 'monster', label: 'Monster', color: '#CC3300' }
+];
+const STATUSES = ['', 'Available', 'Probable', 'Questionable', 'Doubtful', 'Out', 'Injured', 'Day-To-Day', 'Suspended'];
+
+const $ = id => document.getElementById(id);
+const state = { sendLevel: 'medium', editLevel: 'medium', editing: null };
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function when(v) {
+  if (!v) return '<span class="muted">-</span>';
+  const d = new Date(v);
+  return esc(d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
+}
+
+function key() {
+  try { return localStorage.getItem('rmAlertsKey') || ''; } catch (e) { return ''; }
+}
+
+async function api(path, options) {
+  const opts = Object.assign({ headers: {} }, options || {});
+  opts.headers['X-API-Key'] = key();
+  if (opts.body && typeof opts.body !== 'string') {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(path, opts);
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok || data.success === false) {
+    const msg = res.status === 401 ? 'Wrong or missing API key' : (data.error || ('Error ' + res.status));
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function levelPill(level) {
+  const l = LEVELS.find(x => x.id === level) || LEVELS[0];
+  return '<span class="pill" style="background:' + l.color + '">' + esc(l.label.toUpperCase()) + '</span>';
+}
+
+function buildLevels(boxId, stateKey) {
+  const box = $(boxId);
+  box.innerHTML = LEVELS.map(l => '<button type="button" data-level="' + l.id + '" style="background:' + l.color + '">' + l.label + '</button>').join('');
+  box.onclick = e => {
+    const b = e.target.closest('button[data-level]');
+    if (!b) return;
+    state[stateKey] = b.dataset.level;
+    markLevels(boxId, stateKey);
+  };
+  markLevels(boxId, stateKey);
+}
+
+function markLevels(boxId, stateKey) {
+  $(boxId).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.level === state[stateKey]));
+}
+
+function fillStatuses(selectId) {
+  $(selectId).innerHTML = STATUSES.map(s => '<option value="' + esc(s) + '">' + (s ? esc(s) : 'None') + '</option>').join('');
+}
+
+function setResult(id, text, ok) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = 'result ' + (ok ? 'ok' : 'err');
+}
+
+async function sendAlert(e) {
+  e.preventDefault();
+  const sport = $('sSport').value;
+  const owners = $('sOwners').value.split(',').map(s => s.trim()).filter(Boolean);
+  const body = {
+    sportId: sport ? parseInt(sport, 10) : null,
+    title: $('sTitle').value.trim(),
+    body: $('sBody').value.trim(),
+    level: state.sendLevel,
+    notify: $('sNotify').checked
+  };
+  if ($('sUrl').value.trim()) body.url = $('sUrl').value.trim();
+  if ($('sStatus').value) body.status = $('sStatus').value;
+  if (owners.length) { body.ownerUserIds = owners; body.isPlayer = true; }
+  try {
+    const r = await api('/api/message', { method: 'POST', body: body });
+    setResult('sendResult', 'Sent. ' + (r.notified ? 'Push went to ' + r.sent + ' device' + (r.sent === 1 ? '' : 's') + '.' : 'No push, it only shows in the app.'), true);
+    $('sTitle').value = ''; $('sBody').value = ''; $('sUrl').value = ''; $('sOwners').value = ''; $('sStatus').value = '';
+    loadMessages();
+  } catch (err) {
+    setResult('sendResult', err.message, false);
+  }
+}
+
+async function loadMessages() {
+  const params = new URLSearchParams({ hours: $('mHours').value });
+  if ($('mSport').value) params.set('sportId', $('mSport').value);
+  try {
+    const r = await api('/api/messages?' + params.toString());
+    state.messages = r.messages;
+    $('msgList').innerHTML = r.messages.length ? r.messages.map(m =>
+      '<div class="msg">' +
+        '<div class="msg-top">' +
+          (m.sport_id ? '<span class="pill" style="background:' + (SPORT_COLORS[m.sport_id] || '#64748b') + '">' + esc(SPORTS[m.sport_id] || m.sport_id) + '</span>' : '<span class="pill" style="background:#64748b">SITE</span>') +
+          (m.status ? '<strong>' + esc(m.status.toUpperCase()) + '</strong>' : '') +
+          levelPill(m.level) +
+          '<span class="muted">' + when(m.created_at) + '</span>' +
+          '<span class="msg-actions">' +
+            '<button data-edit="' + esc(m.message_id) + '">Edit</button>' +
+            '<button class="danger" data-del="' + esc(m.message_id) + '">Delete</button>' +
+          '</span>' +
+        '</div>' +
+        '<div class="msg-title">' + esc(m.title) + '</div>' +
+        (m.body ? '<div>' + esc(m.body) + '</div>' : '') +
+        (m.url ? '<div><a href="' + esc(m.url) + '" target="_blank" rel="noopener">' + esc(m.url) + '</a></div>' : '') +
+      '</div>').join('') : '<div class="muted">No alerts in this window.</div>';
+  } catch (err) {
+    $('msgList').innerHTML = '<div class="result err">' + esc(err.message) + '</div>';
+  }
+}
+
+async function messageClick(e) {
+  const del = e.target.closest('[data-del]');
+  const edit = e.target.closest('[data-edit]');
+  if (del) {
+    if (!confirm('Delete this alert? It disappears from the app.')) return;
+    try { await api('/api/messages/' + encodeURIComponent(del.dataset.del), { method: 'DELETE' }); loadMessages(); }
+    catch (err) { alert(err.message); }
+  }
+  if (edit) {
+    const m = (state.messages || []).find(x => x.message_id === edit.dataset.edit);
+    if (!m) return;
+    state.editing = m.message_id;
+    $('eTitle').value = m.title || '';
+    $('eBody').value = m.body || '';
+    if (m.status && STATUSES.indexOf(m.status) === -1) {
+      $('eStatus').insertAdjacentHTML('beforeend', '<option value="' + esc(m.status) + '">' + esc(m.status) + '</option>');
+    }
+    $('eStatus').value = m.status || '';
+    state.editLevel = m.level || 'medium';
+    markLevels('eLevels', 'editLevel');
+    $('editResult').textContent = '';
+    $('editDialog').showModal();
+  }
+}
+
+async function saveEdit(e) {
+  e.preventDefault();
+  const body = { title: $('eTitle').value.trim(), body: $('eBody').value.trim(), level: state.editLevel };
+  if ($('eStatus').value) body.status = $('eStatus').value;
+  try {
+    await api('/api/messages/' + encodeURIComponent(state.editing), { method: 'PUT', body: body });
+    $('editDialog').close();
+    loadMessages();
+  } catch (err) {
+    setResult('editResult', err.message, false);
+  }
+}
+
+async function loadCodes() {
+  try {
+    const r = await api('/api/codes');
+    $('codeRows').innerHTML = r.codes.length ? r.codes.map(c =>
+      '<tr>' +
+        '<td><strong>' + esc(c.code) + '</strong></td>' +
+        '<td>' + (c.note ? esc(c.note) : '<span class="muted">-</span>') + '</td>' +
+        '<td>' + (c.user_id ? esc(c.user_id) : '<span class="muted">-</span>') + ' <button data-user="' + esc(c.code) + '" data-current="' + esc(c.user_id || '') + '">Edit</button></td>' +
+        '<td>' + (c.registered ? '<span class="result ok">Yes</span>' : '<span class="muted">No</span>') + '</td>' +
+        '<td>' + when(c.last_seen) + '</td>' +
+        '<td><button class="danger" data-delcode="' + esc(c.code) + '">Delete</button></td>' +
+      '</tr>').join('') : '<tr><td colspan="6" class="muted">No codes yet.</td></tr>';
+  } catch (err) {
+    $('codeRows').innerHTML = '<tr><td colspan="6" class="result err">' + esc(err.message) + '</td></tr>';
+  }
+}
+
+async function addCodes(e) {
+  e.preventDefault();
+  const list = $('cCodes').value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  if (!list.length) return setResult('codeResult', 'Enter at least one code', false);
+  const note = $('cNote').value.trim() || null;
+  const userId = $('cUser').value.trim() || null;
+  try {
+    const r = await api('/api/codes', { method: 'POST', body: { codes: list.map(code => ({ code: code, note: note, userId: userId })) } });
+    setResult('codeResult', 'Added ' + r.added + ' of ' + list.length + (r.added < list.length ? ' (the rest already existed)' : ''), true);
+    $('cCodes').value = ''; $('cNote').value = ''; $('cUser').value = '';
+    loadCodes();
+  } catch (err) {
+    setResult('codeResult', err.message, false);
+  }
+}
+
+async function codeClick(e) {
+  const del = e.target.closest('[data-delcode]');
+  const user = e.target.closest('[data-user]');
+  if (del) {
+    if (!confirm('Delete ' + del.dataset.delcode + '? Anyone registered with it stops getting alerts.')) return;
+    try { await api('/api/codes/' + encodeURIComponent(del.dataset.delcode), { method: 'DELETE' }); loadCodes(); loadDevices(); }
+    catch (err) { alert(err.message); }
+  }
+  if (user) {
+    const value = prompt('BM user id for ' + user.dataset.user + ' (leave empty to unlink)', user.dataset.current);
+    if (value === null) return;
+    try { await api('/api/codes/' + encodeURIComponent(user.dataset.user), { method: 'PUT', body: { userId: value.trim() } }); loadCodes(); }
+    catch (err) { alert(err.message); }
+  }
+}
+
+async function loadDevices() {
+  try {
+    const r = await api('/api/devices');
+    $('deviceRows').innerHTML = r.devices.length ? r.devices.map(d =>
+      '<tr><td><strong>' + esc(d.code) + '</strong></td>' +
+      '<td>' + (d.notifications_enabled ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
+      '<td>' + when(d.last_seen) + '</td></tr>').join('') : '<tr><td colspan="3" class="muted">No devices registered.</td></tr>';
+  } catch (err) {
+    $('deviceRows').innerHTML = '<tr><td colspan="3" class="result err">' + esc(err.message) + '</td></tr>';
+  }
+}
+
+function loadAll() {
+  loadMessages();
+  loadCodes();
+  loadDevices();
+}
+
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('rmAlertsTheme', theme); } catch (e) {}
+}
+
+(function init() {
+  let theme = null;
+  try { theme = localStorage.getItem('rmAlertsTheme'); } catch (e) {}
+  if (!theme) theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  setTheme(theme);
+  $('themeBtn').onclick = () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+
+  $('apiKey').value = key();
+  $('saveKey').onclick = () => {
+    try { localStorage.setItem('rmAlertsKey', $('apiKey').value.trim()); } catch (e) {}
+    loadAll();
+  };
+
+  fillStatuses('sStatus');
+  fillStatuses('eStatus');
+  buildLevels('sLevels', 'sendLevel');
+  buildLevels('eLevels', 'editLevel');
+
+  $('sendForm').onsubmit = sendAlert;
+  $('editForm').onsubmit = saveEdit;
+  $('editCancel').onclick = () => $('editDialog').close();
+  $('msgList').onclick = messageClick;
+  $('codeRows').onclick = codeClick;
+  $('codeForm').onsubmit = addCodes;
+  $('mRefresh').onclick = loadMessages;
+  $('mHours').onchange = loadMessages;
+  $('mSport').onchange = loadMessages;
+  $('cRefresh').onclick = loadCodes;
+  $('dRefresh').onclick = loadDevices;
+
+  if (key()) loadAll();
+  else $('msgList').innerHTML = '<div class="muted">Enter the API key at the top to load everything.</div>';
+})();
+</script>
+</body>
+</html>
