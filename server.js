@@ -84,6 +84,8 @@ async function initializeDatabase() {
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS user_id text`);
     await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS my_players_only boolean NOT NULL DEFAULT false`);
 
+    await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS staff_only boolean NOT NULL DEFAULT false`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages (created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_sport ON messages (sport_id, created_at DESC)`);
 
@@ -129,7 +131,7 @@ function requireWebhookSecret(req, res, next) {
   next();
 }
 
-async function createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds }) {
+async function createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds, staffOnly }) {
   const shouldNotify = notify !== false;
   const messageId = uuidv4();
   const cleanTitle = title.trim();
@@ -140,10 +142,10 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
   const isPlayer = cleanStatus != null || owners != null;
 
   const inserted = await pool.query(
-    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status, status_color, is_player, owner_user_ids)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `INSERT INTO messages (message_id, sport_id, title, body, url, notified, level, status, status_color, is_player, owner_user_ids, staff_only)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING id, message_id, sport_id, title, body, url, level, status, status_color, is_player, created_at`,
-    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus, cleanStatusColor, isPlayer, owners]
+    [messageId, sportId ?? null, cleanTitle, body || null, url || null, shouldNotify, cleanLevel, cleanStatus, cleanStatusColor, isPlayer, owners, staffOnly === true]
   );
 
   const pushTitle = [
@@ -159,7 +161,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
       `SELECT d.code, d.push_token, d.my_players_only, c.user_id
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
-       WHERE d.notifications_enabled = true`
+       WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true' : ''}`
     );
 
     const ownerSet = new Set(owners || []);
@@ -243,7 +245,7 @@ app.post('/api/codes', requireApiKey, async (req, res) => {
 app.get('/api/codes', requireApiKey, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT c.code, c.note, c.user_id, c.created_at,
+      SELECT c.code, c.note, c.is_staff, c.user_id, c.created_at,
              (d.code IS NOT NULL) AS registered,
              d.last_seen
       FROM valid_codes c
@@ -558,7 +560,7 @@ app.post('/api/zoho/webhook', requireWebhookSecret, async (req, res) => {
         results.push({ eventType: event && event.eventType, skipped: true });
         continue;
       }
-      const created = await createMessage({ sportId: null, ...alert, notify: true });
+      const created = await createMessage({ sportId: null, ...alert, notify: true, staffOnly: true });
       results.push({ eventType: event.eventType, messageId: created.messageId, sent: created.sent });
     } catch (error) {
       console.error('Zoho webhook event failed:', error);
@@ -567,6 +569,27 @@ app.post('/api/zoho/webhook', requireWebhookSecret, async (req, res) => {
   }
 
   res.status(200).json({ success: true, results });
+});
+
+async function canSeeStaff(req) {
+  const key = req.get('X-API-Key');
+  if (key && process.env.API_KEY && safeEqual(key, process.env.API_KEY)) return true;
+  const code = (req.query.code || '').toString().trim().toUpperCase();
+  if (!code) return false;
+  const r = await pool.query('SELECT 1 FROM valid_codes WHERE code = $1 AND is_staff = true', [code]);
+  return r.rowCount > 0;
+}
+
+app.put('/api/codes/:code/staff', requireApiKey, async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const staff = req.body && req.body.staff === true;
+    const result = await pool.query('UPDATE valid_codes SET is_staff = $1 WHERE code = $2', [staff, code]);
+    res.json({ success: true, code, staff, updated: result.rowCount > 0 });
+  } catch (error) {
+    console.error('Error setting staff flag:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
 app.get('/api/messages', async (req, res) => {
@@ -588,6 +611,8 @@ app.get('/api/messages', async (req, res) => {
       params.push(sportId);
       where += ` AND sport_id = $${params.length}`;
     }
+
+    if (!(await canSeeStaff(req))) where += ' AND staff_only = false';
 
     const result = await pool.query(
       `SELECT message_id, sport_id, title, body, url, level, status, status_color, is_player, owner_user_ids, created_at
