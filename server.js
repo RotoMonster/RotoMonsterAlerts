@@ -13,6 +13,12 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static('public'));
 
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, private, max-age=0');
+  res.set('Pragma', 'no-cache');
+  next();
+});
+
 const pool = new Pool({
   host: process.env.PGHOST || 'localhost',
   port: parseInt(process.env.PGPORT || '5432', 10),
@@ -86,6 +92,7 @@ async function initializeDatabase() {
 
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS staff_only boolean NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS staff_notifications boolean NOT NULL DEFAULT true`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages (created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_sport ON messages (sport_id, created_at DESC)`);
 
@@ -161,7 +168,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
       `SELECT d.code, d.push_token, d.my_players_only, c.user_id
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
-       WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true' : ''}`
+       WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true AND d.staff_notifications = true' : ''}`
     );
 
     const ownerSet = new Set(owners || []);
@@ -327,7 +334,7 @@ app.post('/api/register', async (req, res) => {
 app.get('/api/devices', requireApiKey, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT code, notifications_enabled, last_seen FROM devices ORDER BY last_seen DESC'
+      'SELECT code, notifications_enabled, my_players_only, staff_notifications, last_seen FROM devices ORDER BY last_seen DESC'
     );
     res.json({ success: true, devices: result.rows });
   } catch (error) {
@@ -386,11 +393,36 @@ app.put('/api/device/:code/filter', async (req, res) => {
   }
 });
 
+app.put('/api/device/:code/staff-notifications', async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const { enabled } = req.body;
+
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'enabled must be true or false' });
+    }
+
+    const result = await pool.query(
+      'UPDATE devices SET staff_notifications = $1 WHERE code = $2',
+      [enabled, code]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Device not registered' });
+    }
+
+    res.json({ success: true, staffNotifications: enabled });
+  } catch (error) {
+    console.error('Error updating staff notification setting:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 app.get('/api/device/:code/notifications-status', async (req, res) => {
   try {
     const code = req.params.code.trim().toUpperCase();
     const result = await pool.query(
-      `SELECT d.notifications_enabled, d.my_players_only, c.user_id
+      `SELECT d.notifications_enabled, d.my_players_only, d.staff_notifications, c.user_id, c.is_staff
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
        WHERE d.code = $1`,
@@ -402,7 +434,14 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
     }
 
     const row = result.rows[0];
-    res.json({ success: true, enabled: row.notifications_enabled, myPlayersOnly: row.my_players_only, linked: row.user_id != null });
+    res.json({
+      success: true,
+      enabled: row.notifications_enabled,
+      myPlayersOnly: row.my_players_only,
+      linked: row.user_id != null,
+      isStaff: row.is_staff === true,
+      staffNotifications: row.staff_notifications
+    });
   } catch (error) {
     console.error('Error reading notification setting:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
