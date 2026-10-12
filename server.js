@@ -474,7 +474,7 @@ app.post(['/api/message', '/api/messages'], requireApiKey, async (req, res) => {
       ? null
       : [...new Set(rawOwners.map(id => String(id).trim()).filter(Boolean))];
 
-    const result = await createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds });
+    const result = await createMessage({ sportId, title, body, url, notify, level, status, statusColor, ownerUserIds, staffOnly: req.body.staffOnly === true });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error posting message:', error);
