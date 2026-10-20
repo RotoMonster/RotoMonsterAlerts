@@ -313,6 +313,8 @@ app.post('/api/register', async (req, res) => {
 
     const registrationId = uuidv4();
 
+    await pool.query('DELETE FROM devices WHERE push_token = $1 AND code <> $2', [pushToken, upperCode]);
+
     await pool.query(
       `INSERT INTO devices (code, push_token, registration_id, last_seen)
        VALUES ($1, $2, $3, now())
