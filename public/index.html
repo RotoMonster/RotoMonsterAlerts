@@ -106,6 +106,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
       </div>
       <div class="full row">
         <label class="check"><input type="checkbox" id="sNotify" checked> Send a push notification</label>
+        <label class="check"><input type="checkbox" id="sStaff"> Staff only</label>
         <button type="submit" class="primary" style="margin-left:auto">Send alert</button>
       </div>
       <div class="full result" id="sendResult"></div>
@@ -145,6 +146,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
         <input id="cNote" placeholder="Who it's for">
         <label for="cUser" style="margin-top:10px">BM user id (optional)</label>
         <input id="cUser" placeholder="Links My players">
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="cStaff"> Staff (gets staff alerts)</label>
       </div>
       <div class="full row">
         <button type="submit" class="primary">Add codes</button>
@@ -152,7 +154,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
       </div>
     </form>
     <div class="scroll"><table>
-      <thead><tr><th>Code</th><th>Note</th><th>BM user id</th><th>Registered</th><th>Last seen</th><th></th></tr></thead>
+      <thead><tr><th>Code</th><th>Note</th><th>BM user id</th><th>Staff</th><th>Registered</th><th>Last seen</th><th></th></tr></thead>
       <tbody id="codeRows"></tbody>
     </table></div>
   </section>
@@ -160,7 +162,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
   <section>
     <h2>Devices <span class="spacer"></span><button id="dRefresh">↻ Refresh</button></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Code</th><th>Notifications</th><th>Last seen</th></tr></thead>
+      <thead><tr><th>Code</th><th>Notifications</th><th>Staff pushes</th><th>Last seen</th></tr></thead>
       <tbody id="deviceRows"></tbody>
     </table></div>
   </section>
@@ -278,7 +280,8 @@ async function sendAlert(e) {
     title: $('sTitle').value.trim(),
     body: $('sBody').value.trim(),
     level: state.sendLevel,
-    notify: $('sNotify').checked
+    notify: $('sNotify').checked,
+    staffOnly: $('sStaff').checked
   };
   if ($('sUrl').value.trim()) body.url = $('sUrl').value.trim();
   if ($('sStatus').value) body.status = $('sStatus').value;
@@ -286,7 +289,7 @@ async function sendAlert(e) {
   try {
     const r = await api('/api/message', { method: 'POST', body: body });
     setResult('sendResult', 'Sent. ' + (r.notified ? 'Push went to ' + r.sent + ' device' + (r.sent === 1 ? '' : 's') + '.' : 'No push, it only shows in the app.'), true);
-    $('sTitle').value = ''; $('sBody').value = ''; $('sUrl').value = ''; $('sOwners').value = ''; $('sStatus').value = '';
+    $('sTitle').value = ''; $('sBody').value = ''; $('sUrl').value = ''; $('sOwners').value = ''; $('sStatus').value = ''; $('sStaff').checked = false;
     loadMessages();
   } catch (err) {
     setResult('sendResult', err.message, false);
@@ -303,6 +306,7 @@ async function loadMessages() {
       '<div class="msg">' +
         '<div class="msg-top">' +
           (m.sport_id ? '<span class="pill" style="background:' + (SPORT_COLORS[m.sport_id] || '#64748b') + '">' + esc(SPORTS[m.sport_id] || m.sport_id) + '</span>' : '<span class="pill" style="background:#64748b">SITE</span>') +
+          (m.staff_only ? '<span class="pill" style="background:#7c3aed">STAFF</span>' : '') +
           (m.status ? '<strong>' + esc(m.status.toUpperCase()) + '</strong>' : '') +
           levelPill(m.level) +
           '<span class="muted">' + when(m.created_at) + '</span>' +
@@ -366,12 +370,13 @@ async function loadCodes() {
         '<td><strong>' + esc(c.code) + '</strong></td>' +
         '<td>' + (c.note ? esc(c.note) : '<span class="muted">-</span>') + '</td>' +
         '<td>' + (c.user_id ? esc(c.user_id) : '<span class="muted">-</span>') + ' <button data-user="' + esc(c.code) + '" data-current="' + esc(c.user_id || '') + '">Edit</button></td>' +
+        '<td><button data-staff="' + esc(c.code) + '" data-on="' + (c.is_staff ? '1' : '0') + '">' + (c.is_staff ? 'Yes' : 'No') + '</button></td>' +
         '<td>' + (c.registered ? '<span class="result ok">Yes</span>' : '<span class="muted">No</span>') + '</td>' +
         '<td>' + when(c.last_seen) + '</td>' +
         '<td><button class="danger" data-delcode="' + esc(c.code) + '">Delete</button></td>' +
-      '</tr>').join('') : '<tr><td colspan="6" class="muted">No codes yet.</td></tr>';
+      '</tr>').join('') : '<tr><td colspan="7" class="muted">No codes yet.</td></tr>';
   } catch (err) {
-    $('codeRows').innerHTML = '<tr><td colspan="6" class="result err">' + esc(err.message) + '</td></tr>';
+    $('codeRows').innerHTML = '<tr><td colspan="7" class="result err">' + esc(err.message) + '</td></tr>';
   }
 }
 
@@ -382,9 +387,9 @@ async function addCodes(e) {
   const note = $('cNote').value.trim() || null;
   const userId = $('cUser').value.trim() || null;
   try {
-    const r = await api('/api/codes', { method: 'POST', body: { codes: list.map(code => ({ code: code, note: note, userId: userId })) } });
+    const r = await api('/api/codes', { method: 'POST', body: { codes: list.map(code => ({ code: code, note: note, userId: userId, isStaff: $('cStaff').checked })) } });
     setResult('codeResult', 'Added ' + r.added + ' of ' + list.length + (r.added < list.length ? ' (the rest already existed)' : ''), true);
-    $('cCodes').value = ''; $('cNote').value = ''; $('cUser').value = '';
+    $('cCodes').value = ''; $('cNote').value = ''; $('cUser').value = ''; $('cStaff').checked = false;
     loadCodes();
   } catch (err) {
     setResult('codeResult', err.message, false);
@@ -394,6 +399,13 @@ async function addCodes(e) {
 async function codeClick(e) {
   const del = e.target.closest('[data-delcode]');
   const user = e.target.closest('[data-user]');
+  const staff = e.target.closest('[data-staff]');
+  if (staff) {
+    const on = staff.dataset.on === '1';
+    if (!confirm((on ? 'Remove staff from ' : 'Make ') + staff.dataset.staff + (on ? '?' : ' staff? It will see staff alerts.'))) return;
+    try { await api('/api/codes/' + encodeURIComponent(staff.dataset.staff) + '/staff', { method: 'PUT', body: { staff: !on } }); loadCodes(); }
+    catch (err) { alert(err.message); }
+  }
   if (del) {
     if (!confirm('Delete ' + del.dataset.delcode + '? Anyone registered with it stops getting alerts.')) return;
     try { await api('/api/codes/' + encodeURIComponent(del.dataset.delcode), { method: 'DELETE' }); loadCodes(); loadDevices(); }
@@ -413,9 +425,10 @@ async function loadDevices() {
     $('deviceRows').innerHTML = r.devices.length ? r.devices.map(d =>
       '<tr><td><strong>' + esc(d.code) + '</strong></td>' +
       '<td>' + (d.notifications_enabled ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
-      '<td>' + when(d.last_seen) + '</td></tr>').join('') : '<tr><td colspan="3" class="muted">No devices registered.</td></tr>';
+      '<td>' + (d.staff_notifications ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
+      '<td>' + when(d.last_seen) + '</td></tr>').join('') : '<tr><td colspan="4" class="muted">No devices registered.</td></tr>';
   } catch (err) {
-    $('deviceRows').innerHTML = '<tr><td colspan="3" class="result err">' + esc(err.message) + '</td></tr>';
+    $('deviceRows').innerHTML = '<tr><td colspan="4" class="result err">' + esc(err.message) + '</td></tr>';
   }
 }
 

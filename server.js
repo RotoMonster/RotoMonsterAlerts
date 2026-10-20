@@ -233,11 +233,12 @@ app.post('/api/codes', requireApiKey, async (req, res) => {
       if (!code) continue;
       const note = typeof entry === 'string' ? null : entry.note || null;
       const userId = typeof entry === 'string' || entry.userId == null || entry.userId === '' ? null : String(entry.userId).trim();
+      const isStaff = typeof entry !== 'string' && entry.isStaff === true;
 
       const result = await pool.query(
-        `INSERT INTO valid_codes (code, note, user_id) VALUES ($1, $2, $3)
+        `INSERT INTO valid_codes (code, note, user_id, is_staff) VALUES ($1, $2, $3, $4)
          ON CONFLICT (code) DO NOTHING`,
-        [code, note, userId]
+        [code, note, userId, isStaff]
       );
       added += result.rowCount;
     }
@@ -656,7 +657,7 @@ app.get('/api/messages', async (req, res) => {
     if (!(await canSeeStaff(req))) where += ' AND staff_only = false';
 
     const result = await pool.query(
-      `SELECT message_id, sport_id, title, body, url, level, status, status_color, is_player, owner_user_ids, created_at
+      `SELECT message_id, sport_id, title, body, url, level, status, status_color, is_player, owner_user_ids, staff_only, created_at
        FROM messages
        WHERE ${where}
        ORDER BY created_at DESC
