@@ -154,7 +154,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
       </div>
     </form>
     <div class="scroll"><table>
-      <thead><tr><th>Code</th><th>Note</th><th>BM user id</th><th>Staff</th><th>Registered</th><th>Last seen</th><th></th></tr></thead>
+      <thead><tr><th>Code</th><th>Note</th><th>BM user id</th><th>Staff</th><th>Staff alerts only</th><th>Registered</th><th>Last seen</th><th></th></tr></thead>
       <tbody id="codeRows"></tbody>
     </table></div>
   </section>
@@ -371,12 +371,13 @@ async function loadCodes() {
         '<td>' + (c.note ? esc(c.note) : '<span class="muted">-</span>') + '</td>' +
         '<td>' + (c.user_id ? esc(c.user_id) : '<span class="muted">-</span>') + ' <button data-user="' + esc(c.code) + '" data-current="' + esc(c.user_id || '') + '">Edit</button></td>' +
         '<td><button data-staff="' + esc(c.code) + '" data-on="' + (c.is_staff ? '1' : '0') + '">' + (c.is_staff ? 'Yes' : 'No') + '</button></td>' +
+        '<td><button data-staffonly="' + esc(c.code) + '" data-on="' + (c.staff_alerts_only ? '1' : '0') + '">' + (c.staff_alerts_only ? 'Yes' : 'No') + '</button></td>' +
         '<td>' + (c.registered ? '<span class="result ok">Yes</span>' : '<span class="muted">No</span>') + '</td>' +
         '<td>' + when(c.last_seen) + '</td>' +
         '<td><button class="danger" data-delcode="' + esc(c.code) + '">Delete</button></td>' +
-      '</tr>').join('') : '<tr><td colspan="7" class="muted">No codes yet.</td></tr>';
+      '</tr>').join('') : '<tr><td colspan="8" class="muted">No codes yet.</td></tr>';
   } catch (err) {
-    $('codeRows').innerHTML = '<tr><td colspan="7" class="result err">' + esc(err.message) + '</td></tr>';
+    $('codeRows').innerHTML = '<tr><td colspan="8" class="result err">' + esc(err.message) + '</td></tr>';
   }
 }
 
@@ -400,6 +401,13 @@ async function codeClick(e) {
   const del = e.target.closest('[data-delcode]');
   const user = e.target.closest('[data-user]');
   const staff = e.target.closest('[data-staff]');
+  const staffOnly = e.target.closest('[data-staffonly]');
+  if (staffOnly) {
+    const on = staffOnly.dataset.on === '1';
+    if (!confirm(on ? 'Let ' + staffOnly.dataset.staffonly + ' get all alerts again?' : 'Only send staff alerts to ' + staffOnly.dataset.staffonly + '? It stops getting news and player alerts.')) return;
+    try { await api('/api/codes/' + encodeURIComponent(staffOnly.dataset.staffonly) + '/staff-alerts-only', { method: 'PUT', body: { staffAlertsOnly: !on } }); loadCodes(); }
+    catch (err) { alert(err.message); }
+  }
   if (staff) {
     const on = staff.dataset.on === '1';
     if (!confirm((on ? 'Remove staff from ' : 'Make ') + staff.dataset.staff + (on ? '?' : ' staff? It will see staff alerts.'))) return;

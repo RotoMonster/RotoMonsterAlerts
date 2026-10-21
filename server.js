@@ -93,6 +93,7 @@ async function initializeDatabase() {
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS staff_only boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS staff_notifications boolean NOT NULL DEFAULT true`);
+    await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS staff_alerts_only boolean NOT NULL DEFAULT false`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages (created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_messages_sport ON messages (sport_id, created_at DESC)`);
 
@@ -168,7 +169,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
       `SELECT d.code, d.push_token, d.my_players_only, c.user_id
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
-       WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true AND d.staff_notifications = true' : ''}`
+       WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true AND d.staff_notifications = true' : ' AND COALESCE(c.staff_alerts_only, false) = false'}`
     );
 
     const ownerSet = new Set(owners || []);
@@ -253,7 +254,7 @@ app.post('/api/codes', requireApiKey, async (req, res) => {
 app.get('/api/codes', requireApiKey, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT c.code, c.note, c.is_staff, c.user_id, c.created_at,
+      SELECT c.code, c.note, c.is_staff, c.staff_alerts_only, c.user_id, c.created_at,
              (d.code IS NOT NULL) AS registered,
              d.last_seen
       FROM valid_codes c
@@ -634,6 +635,18 @@ app.put('/api/codes/:code/staff', requireApiKey, async (req, res) => {
   }
 });
 
+app.put('/api/codes/:code/staff-alerts-only', requireApiKey, async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const only = req.body && req.body.staffAlertsOnly === true;
+    const result = await pool.query('UPDATE valid_codes SET staff_alerts_only = $1 WHERE code = $2', [only, code]);
+    res.json({ success: true, code, staffAlertsOnly: only, updated: result.rowCount > 0 });
+  } catch (error) {
+    console.error('Error setting staff alerts only:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 app.get('/api/messages', async (req, res) => {
   try {
     const hours = Math.min(Math.max(parseInt(req.query.hours || '12', 10) || 12, 1), 720);
@@ -641,9 +654,13 @@ app.get('/api/messages', async (req, res) => {
 
     const code = req.query.code ? String(req.query.code).trim().toUpperCase() : null;
     let userId = null;
+    let staffAlertsOnly = false;
     if (code) {
-      const found = await pool.query('SELECT user_id FROM valid_codes WHERE code = $1', [code]);
-      if (found.rowCount > 0) userId = found.rows[0].user_id;
+      const found = await pool.query('SELECT user_id, staff_alerts_only FROM valid_codes WHERE code = $1', [code]);
+      if (found.rowCount > 0) {
+        userId = found.rows[0].user_id;
+        staffAlertsOnly = found.rows[0].staff_alerts_only === true;
+      }
     }
 
     const params = [hours];
@@ -655,6 +672,7 @@ app.get('/api/messages', async (req, res) => {
     }
 
     if (!(await canSeeStaff(req))) where += ' AND staff_only = false';
+    if (staffAlertsOnly) where += ' AND staff_only = true';
 
     const result = await pool.query(
       `SELECT message_id, sport_id, title, body, url, level, status, status_color, is_player, owner_user_ids, staff_only, created_at
