@@ -21,6 +21,12 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; display: grid
 section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
 section h2 { margin: 0 0 14px; font-size: 16px; display: flex; align-items: center; gap: 10px; }
 section h2 .spacer { margin-left: auto; }
+section.collapsible > h2 { cursor: pointer; user-select: none; }
+section.collapsible > h2 .caret { display: inline-block; width: 12px; color: var(--muted); transition: transform .15s; }
+section.collapsible:not(.collapsed) > h2 .caret { transform: rotate(90deg); }
+section.collapsed > h2 { margin-bottom: 0; }
+section.collapsed > :not(h2) { display: none !important; }
+section h2 .count { color: var(--muted); font-weight: 500; }
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
 input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); color: var(--text); font: inherit; }
 textarea { resize: vertical; min-height: 70px; }
@@ -113,8 +119,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
     </form>
   </section>
 
-  <section>
-    <h2>Recent alerts
+  <section class="collapsible collapsed">
+    <h2><span class="sec-toggle"><span class="caret">▸</span> Recent alerts <span class="count" id="mCount"></span></span>
       <span class="spacer"></span>
       <select id="mHours" style="width:auto">
         <option value="12">Past 12 hours</option>
@@ -134,8 +140,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
     <div id="msgList" class="msg-list"></div>
   </section>
 
-  <section>
-    <h2>Codes <span class="spacer"></span><button id="cRefresh">↻ Refresh</button></h2>
+  <section class="collapsible collapsed">
+    <h2><span class="sec-toggle"><span class="caret">▸</span> Codes <span class="count" id="cCount"></span></span> <span class="spacer"></span><button id="cRefresh">↻ Refresh</button></h2>
     <form id="codeForm" class="grid" style="margin-bottom:14px">
       <div>
         <label for="cCodes">New codes (comma or one per line)</label>
@@ -159,8 +165,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
     </table></div>
   </section>
 
-  <section>
-    <h2>Devices <span class="spacer"></span><button id="dRefresh">↻ Refresh</button></h2>
+  <section class="collapsible collapsed">
+    <h2><span class="sec-toggle"><span class="caret">▸</span> Devices <span class="count" id="dCount"></span></span> <span class="spacer"></span><button id="dRefresh">↻ Refresh</button></h2>
     <div class="scroll"><table>
       <thead><tr><th>Code</th><th>Notifications</th><th>Staff pushes</th><th>Last seen</th></tr></thead>
       <tbody id="deviceRows"></tbody>
@@ -302,6 +308,7 @@ async function loadMessages() {
   try {
     const r = await api('/api/messages?' + params.toString());
     state.messages = r.messages;
+    $('mCount').textContent = '(' + r.messages.length + ')';
     $('msgList').innerHTML = r.messages.length ? r.messages.map(m =>
       '<div class="msg">' +
         '<div class="msg-top">' +
@@ -365,6 +372,7 @@ async function saveEdit(e) {
 async function loadCodes() {
   try {
     const r = await api('/api/codes');
+    $('cCount').textContent = '(' + r.codes.length + ')';
     $('codeRows').innerHTML = r.codes.length ? r.codes.map(c =>
       '<tr>' +
         '<td><strong>' + esc(c.code) + '</strong></td>' +
@@ -430,6 +438,7 @@ async function codeClick(e) {
 async function loadDevices() {
   try {
     const r = await api('/api/devices');
+    $('dCount').textContent = '(' + r.devices.length + ')';
     $('deviceRows').innerHTML = r.devices.length ? r.devices.map(d =>
       '<tr><td><strong>' + esc(d.code) + '</strong></td>' +
       '<td>' + (d.notifications_enabled ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
@@ -441,6 +450,10 @@ async function loadDevices() {
 }
 
 function loadAll() {
+  document.querySelectorAll('section.collapsible > h2').forEach(h => h.addEventListener('click', e => {
+    if (e.target.closest('button, select, input, a')) return;
+    h.parentElement.classList.toggle('collapsed');
+  }));
   loadMessages();
   loadCodes();
   loadDevices();
