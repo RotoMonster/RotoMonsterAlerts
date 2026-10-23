@@ -89,6 +89,7 @@ async function initializeDatabase() {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_user_ids text[]`);
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS user_id text`);
     await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS my_players_only boolean NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS min_level text NOT NULL DEFAULT 'low'`);
 
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS staff_only boolean NOT NULL DEFAULT false`);
@@ -166,7 +167,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
 
   if (shouldNotify) {
     const devices = await pool.query(
-      `SELECT d.code, d.push_token, d.my_players_only, c.user_id
+      `SELECT d.code, d.push_token, d.my_players_only, d.min_level, c.user_id
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
        WHERE d.notifications_enabled = true${staffOnly === true ? ' AND c.is_staff = true AND d.staff_notifications = true' : ' AND COALESCE(c.staff_alerts_only, false) = false'}`
@@ -176,6 +177,7 @@ async function createMessage({ sportId, title, body, url, notify, level, status,
     const pushMessages = devices.rows
       .filter(d => Expo.isExpoPushToken(d.push_token))
       .filter(d => !isPlayer || !d.my_players_only || (d.user_id != null && ownerSet.has(d.user_id)))
+      .filter(d => !cleanLevel || LEVELS.indexOf(cleanLevel) >= Math.max(0, LEVELS.indexOf(d.min_level || 'low')))
       .map(d => ({
         to: d.push_token,
         sound: 'default',
@@ -338,7 +340,7 @@ app.post('/api/register', async (req, res) => {
 app.get('/api/devices', requireApiKey, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT code, notifications_enabled, my_players_only, staff_notifications, last_seen FROM devices ORDER BY last_seen DESC'
+      'SELECT code, notifications_enabled, my_players_only, min_level, staff_notifications, last_seen FROM devices ORDER BY last_seen DESC'
     );
     res.json({ success: true, devices: result.rows });
   } catch (error) {
@@ -397,6 +399,28 @@ app.put('/api/device/:code/filter', async (req, res) => {
   }
 });
 
+app.put('/api/device/:code/min-level', async (req, res) => {
+  try {
+    const code = req.params.code.trim().toUpperCase();
+    const minLevel = String(req.body.minLevel || '').trim().toLowerCase();
+
+    if (!LEVELS.includes(minLevel)) {
+      return res.status(400).json({ success: false, error: 'minLevel must be low, medium, high or monster' });
+    }
+
+    const result = await pool.query('UPDATE devices SET min_level = $1 WHERE code = $2', [minLevel, code]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Device not registered' });
+    }
+
+    res.json({ success: true, minLevel });
+  } catch (error) {
+    console.error('Error updating min level:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 app.put('/api/device/:code/staff-notifications', async (req, res) => {
   try {
     const code = req.params.code.trim().toUpperCase();
@@ -426,7 +450,7 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
   try {
     const code = req.params.code.trim().toUpperCase();
     const result = await pool.query(
-      `SELECT d.notifications_enabled, d.my_players_only, d.staff_notifications, c.user_id, c.is_staff
+      `SELECT d.notifications_enabled, d.my_players_only, d.min_level, d.staff_notifications, c.user_id, c.is_staff
        FROM devices d
        LEFT JOIN valid_codes c ON c.code = d.code
        WHERE d.code = $1`,
@@ -442,6 +466,7 @@ app.get('/api/device/:code/notifications-status', async (req, res) => {
       success: true,
       enabled: row.notifications_enabled,
       myPlayersOnly: row.my_players_only,
+      minLevel: row.min_level || 'low',
       linked: row.user_id != null,
       isStaff: row.is_staff === true,
       staffNotifications: row.staff_notifications

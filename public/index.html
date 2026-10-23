@@ -168,7 +168,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
   <section class="collapsible collapsed">
     <h2><span class="sec-toggle"><span class="caret">▸</span> Devices <span class="count" id="dCount"></span></span> <span class="spacer"></span><button id="dRefresh">↻ Refresh</button></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Code</th><th>Notifications</th><th>Staff pushes</th><th>Last seen</th></tr></thead>
+      <thead><tr><th>Code</th><th>Notifications</th><th>Players</th><th>Min level</th><th>Staff pushes</th><th>Last seen</th></tr></thead>
       <tbody id="deviceRows"></tbody>
     </table></div>
   </section>
@@ -442,10 +442,12 @@ async function loadDevices() {
     $('deviceRows').innerHTML = r.devices.length ? r.devices.map(d =>
       '<tr><td><strong>' + esc(d.code) + '</strong></td>' +
       '<td>' + (d.notifications_enabled ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
+      '<td>' + (d.my_players_only ? 'My players' : '<span class="muted">All</span>') + '</td>' +
+      '<td>' + esc(d.min_level || 'low') + '</td>' +
       '<td>' + (d.staff_notifications ? '<span class="result ok">On</span>' : '<span class="muted">Off</span>') + '</td>' +
-      '<td>' + when(d.last_seen) + '</td></tr>').join('') : '<tr><td colspan="4" class="muted">No devices registered.</td></tr>';
+      '<td>' + when(d.last_seen) + '</td></tr>').join('') : '<tr><td colspan="6" class="muted">No devices registered.</td></tr>';
   } catch (err) {
-    $('deviceRows').innerHTML = '<tr><td colspan="4" class="result err">' + esc(err.message) + '</td></tr>';
+    $('deviceRows').innerHTML = '<tr><td colspan="6" class="result err">' + esc(err.message) + '</td></tr>';
   }
 }
 
