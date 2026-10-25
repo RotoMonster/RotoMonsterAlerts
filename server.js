@@ -299,9 +299,10 @@ app.delete('/api/codes/:code', requireApiKey, async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   try {
-    const { code, pushToken } = req.body;
-    if (!code || !pushToken) {
-      return res.status(400).json({ success: false, error: 'code and pushToken are required' });
+    const { code } = req.body;
+    const pushToken = req.body.pushToken || null;
+    if (!code) {
+      return res.status(400).json({ success: false, error: 'code is required' });
     }
 
     const upperCode = code.trim().toUpperCase();
@@ -311,13 +312,13 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid code. Contact administrator.' });
     }
 
-    if (!isValidPushToken(pushToken)) {
+    if (pushToken && !isValidPushToken(pushToken)) {
       return res.status(400).json({ success: false, error: 'Invalid push token format' });
     }
 
     const registrationId = uuidv4();
 
-    await pool.query('DELETE FROM devices WHERE push_token = $1 AND code <> $2', [pushToken, upperCode]);
+    if (pushToken) await pool.query('DELETE FROM devices WHERE push_token = $1 AND code <> $2', [pushToken, upperCode]);
 
     await pool.query(
       `INSERT INTO devices (code, push_token, registration_id, last_seen)
