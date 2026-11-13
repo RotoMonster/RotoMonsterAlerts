@@ -89,6 +89,9 @@ async function initializeDatabase() {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_user_ids text[]`);
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS user_id text`);
     await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS my_players_only boolean NOT NULL DEFAULT false`);
+  const cleanupMessages = () => pool.query(`DELETE FROM messages WHERE created_at < now() - interval '3 days'`).then(r => console.log(`cleanup: deleted ${r.rowCount} messages`)).catch(e => console.error('cleanup failed', e.message));
+  cleanupMessages();
+  setInterval(cleanupMessages, 6 * 60 * 60 * 1000);
     await pool.query(`ALTER TABLE devices ADD COLUMN IF NOT EXISTS min_level text NOT NULL DEFAULT 'low'`);
 
     await pool.query(`ALTER TABLE valid_codes ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false`);
